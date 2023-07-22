@@ -5,7 +5,8 @@ import torch
 from sklearn.utils import shuffle
 
 from torch_geometric.data import InMemoryDataset, download_url
-from torch_geometric.data import Data, DataLoader
+from torch_geometric.data import Data
+from .sc_dataloader import DataLoader
 from scipy.spatial import Delaunay
 from typing import Union
 from torch import Tensor
@@ -21,11 +22,8 @@ class BuildSimplex(torch.nn.Module):
 
     def forward(self, data):
         """
-        Args:
-            img (PIL Image or Tensor): Image to be scaled.
-
         Returns:
-            PIL Image or Tensor: Rescaled image.
+            features of simplices and the adjacent matrix
         """
         pos = data.pos.numpy()
         assert pos.shape[1] == self.order
@@ -36,21 +34,19 @@ class BuildSimplex(torch.nn.Module):
         s1_i, am1_i = extrace_ls_from_hs(s2_i)
         s0_i= sc_i.points
         am0_i = get_adj_mat(s0_i, s1_i)
-        sc_data = Data()
+        adj_mat = Data()
         # the k-simplices in a batch can be concat like other tensors, but the adj matrix in a batch can't,
         # therefore I use an additional Data to save the adj matrix to easier collate
         # give the k-simplex feature, barycenter
 
-        sc_data.am0 = torch.tensor(am0_i, dtype=torch.int32)
-
-
+        adj_mat.am0 = torch.tensor(am0_i, dtype=torch.int32)
 
         data.s1 = torch.tensor(s1_i, dtype=torch.int32)
         pos1 = (pos[s1_i[:,0],:]+ pos[s1_i[:,1],:])/2.0         #barycentre coordinate
         ab1 = -pos[s1_i[:,0],:]+ pos[s1_i[:,1],:]               # vector AB
         z1 = np.linalg.norm(ab1,2,axis=-1)                      #length of the edge
         ori1 = ab1/np.expand_dims(z1, -1)                       #normailized orientation vector
-        sc_data.am1 = torch.tensor(am1_i, dtype=torch.int32)    #adj matrix
+        adj_mat.am1 = torch.tensor(am1_i, dtype=torch.int32)    #adj matrix
 
         data.s2 = torch.tensor(s2_i, dtype=torch.int32)
         pos2 = (pos[s2_i[:, 0], :] + pos[s2_i[:, 1], :]+ pos[s2_i[:, 2], :]) / 3.0          #barycentre coordinate
@@ -59,7 +55,7 @@ class BuildSimplex(torch.nn.Module):
         ori2 = np.cross(ab2,ac2)
         z2 = np.linalg.norm(ori2,2,axis=-1)/2.0                                             #area of triangle
         ori2 = ori2/np.expand_dims(z2, -1)                                                  #normailized normal vector
-        sc_data.am2 = torch.tensor(am2_i, dtype=torch.int32)
+        adj_mat.am2 = torch.tensor(am2_i, dtype=torch.int32)
 
         data.s3 = torch.tensor(s3_i, dtype=torch.int32)
         pos3 = (pos[s3_i[:, 0], :] + pos[s3_i[:, 1], :] + pos[s3_i[:, 2], :]+ pos[s3_i[:, 3], :]) / 4.0
@@ -77,8 +73,8 @@ class BuildSimplex(torch.nn.Module):
         data.pos1 = torch.tensor(pos1, dtype=torch.float32)
         data.pos2 = torch.tensor(pos2, dtype=torch.float32)
         data.pos3 = torch.tensor(pos3, dtype=torch.float32)
-
-        return data, sc_data
+        ret = {'data': data, 'adj_mat': adj_mat}
+        return ret
 
     def __repr__(self) -> str:
         detail = f"(size={self.size}, interpolation={self.interpolation.value}, max_size={self.max_size}, antialias={self.antialias})"
@@ -125,53 +121,6 @@ def get_adj_mat(points,edges):
 
 
 class QM9SC(InMemoryDataset):
-    r"""
-        A `Pytorch Geometric <https://pytorch-geometric.readthedocs.io/en/latest/index.html>`_ data interface for :obj:`QM9` dataset
-        which is from `"Quantum chemistry structures and properties of 134 kilo molecules" <https://www.nature.com/articles/sdata201422>`_ paper.
-        It connsists of about 130,000 equilibrium molecules with 12 regression targets:
-        :obj:`mu`, :obj:`alpha`, :obj:`homo`, :obj:`lumo`, :obj:`gap`, :obj:`r2`, :obj:`zpve`, :obj:`U0`, :obj:`U`, :obj:`H`, :obj:`G`, :obj:`Cv`.
-        Each molecule includes complete spatial information for the single low energy conformation of the atoms in the molecule.
-
-        .. note::
-            We used the processed data in `DimeNet <https://github.com/klicperajo/dimenet/tree/master/data>`_, wihch includes spatial information and type for each atom.
-            You can also use `QM9 in Pytorch Geometric <https://pytorch-geometric.readthedocs.io/en/latest/_modules/torch_geometric/datasets/qm9.html#QM9>`_.
-
-
-        Args:
-            root (string): the dataset folder will be located at root/qm9.
-            transform (callable, optional): A function/transform that takes in an
-                :obj:`torch_geometric.data.Data` object and returns a transformed
-                version. The data object will be transformed before every access.
-                (default: :obj:`None`)
-            pre_transform (callable, optional): A function/transform that takes in
-                an :obj:`torch_geometric.data.Data` object and returns a
-                transformed version. The data object will be transformed before
-                being saved to disk. (default: :obj:`None`)
-            pre_filter (callable, optional): A function that takes in an
-                :obj:`torch_geometric.data.Data` object and returns a boolean
-                value, indicating whether the data object should be included in the
-                final dataset. (default: :obj:`None`)
-
-        Example:
-        --------
-
-        >>> dataset = QM93D()
-        >>> target = 'mu'
-        >>> dataset.data.y = dataset.data[target]
-        >>> split_idx = dataset.get_idx_split(len(dataset.data.y), train_size=110000, valid_size=10000, seed=42)
-        >>> train_dataset, valid_dataset, test_dataset = dataset[split_idx['train']], dataset[split_idx['valid']], dataset[split_idx['test']]
-        >>> train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-        >>> data = next(iter(train_loader))
-        >>> data
-        Batch(Cv=[32], G=[32], H=[32], U=[32], U0=[32], alpha=[32], batch=[579], gap=[32], homo=[32], lumo=[32], mu=[32], pos=[579, 3], ptr=[33], r2=[32], y=[32], z=[579], zpve=[32])
-
-        Where the attributes of the output data indicates:
-
-        * :obj:`z`: The atom type.
-        * :obj:`pos`: The 3D position for atoms.
-        * :obj:`y`: The target property for the graph (molecule).
-        * :obj:`batch`: The assignment vector which maps each node to its respective graph identifier and can help reconstructe single graphs
-    """
 
     def __init__(self, root='dataset/', transform=None, pre_transform=None, pre_filter=None):
 
@@ -323,9 +272,6 @@ class QM9SC(InMemoryDataset):
             data = self.get(self.indices()[idx])
             if self.transform is None:
                 return data
-            elif (isinstance(self.transform, BuildSimplex)):
-                data, sc_data = self.transform(data)
-                return data, sc_data
             else:
                 data = self.transform(data)
                 return data

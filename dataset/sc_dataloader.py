@@ -14,8 +14,8 @@ class Collater:
 
     def __call__(self, batch):
 
-        sc_batch = [item[1] for item in batch]
-        batch = [item[0] for item in batch]
+        sc_batch = [item['adj_mat'] for item in batch]
+        batch = [item['data'] for item in batch]
 
         batch = Batch.from_data_list(batch, self.follow_batch, self.exclude_keys)
         sc_d = Data()

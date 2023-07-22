@@ -1,45 +1,49 @@
 import torch
 from torch import nn
-from torch.nn import Linear, Embedding
+import torch.nn.functional as F
 from torch_geometric.nn.inits import glorot_orthogonal
-from torch_geometric.nn import radius_graph
 from torch_scatter import scatter
 from math import sqrt
 
-from ...utils import xyz_to_dat
-# from .features import dist_emb, angle_emb, torsion_emb
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-def swish(x):
-    return x * torch.sigmoid(x)
+class swish(torch.nn.Module):
+    def __init__(self):
+        super(swish, self).__init__()
 
+    def forward(self, x):
+        return x * torch.sigmoid(x)
 
+class ShiftedSoftplus(torch.nn.Module):
+    def __init__(self):
+        super(ShiftedSoftplus, self).__init__()
+        self.shift = torch.log(torch.tensor(2.0)).item()
+
+    def forward(self, x):
+        return F.softplus(x) - self.shift
+
+# for input
 class emb(torch.nn.Module):
-    def __init__(self, num_spherical, num_radial, cutoff, envelope_exponent):
+    def __init__(self, hidden_channels):
         super(emb, self).__init__()
-        self.dist_emb = dist_emb(num_radial, cutoff, envelope_exponent)
-        self.angle_emb = angle_emb(num_spherical, num_radial, cutoff, envelope_exponent)
-        self.torsion_emb = torsion_emb(num_spherical, num_radial, cutoff, envelope_exponent)
-        self.reset_parameters()
+        self.emb = nn.Embedding(100, hidden_channels)
+        self.lin1 = nn.Linear(1, hidden_channels)
+        self.lin2 = nn.Linear(1, hidden_channels)
+        self.lin3 = nn.Linear(1, hidden_channels)
 
-    def reset_parameters(self):
-        self.dist_emb.reset_parameters()
+    def forward(self, z,z1,z2,z3):
+        return self.emb(z),self.lin1(z1),self.lin2(z2),self.lin3(z3)
 
-    def forward(self, dist, angle, torsion, idx_kj):
-        dist_emb = self.dist_emb(dist)
-        angle_emb = self.angle_emb(dist, angle, idx_kj)
-        torsion_emb = self.torsion_emb(dist, angle, torsion, idx_kj)
-        return dist_emb, angle_emb, torsion_emb
 
 
 class ResidualLayer(torch.nn.Module):
     def __init__(self, hidden_channels, act=swish):
         super(ResidualLayer, self).__init__()
         self.act = act
-        self.lin1 = Linear(hidden_channels, hidden_channels)
-        self.lin2 = Linear(hidden_channels, hidden_channels)
+        self.lin1 = nn.Linear(hidden_channels, hidden_channels)
+        self.lin2 = nn.Linear(hidden_channels, hidden_channels)
 
         self.reset_parameters()
 
@@ -53,39 +57,25 @@ class ResidualLayer(torch.nn.Module):
         return x + self.act(self.lin2(self.act(self.lin1(x))))
 
 
-class init(torch.nn.Module):
-    def __init__(self, num_radial, hidden_channels, act=swish, use_node_features=True):
-        super(init, self).__init__()
-        self.act = act
-        self.use_node_features = use_node_features
-        if self.use_node_features:
-            self.emb = Embedding(95, hidden_channels)
-        else:  # option to use no node features and a learned embedding vector for each node instead
-            self.node_embedding = nn.Parameter(torch.empty((hidden_channels,)))
-            nn.init.normal_(self.node_embedding)
-        self.lin_rbf_0 = Linear(num_radial, hidden_channels)
-        self.lin = Linear(3 * hidden_channels, hidden_channels)
-        self.lin_rbf_1 = nn.Linear(num_radial, hidden_channels, bias=False)
-        self.reset_parameters()
+class GraphConvolutionLayer(nn.Module):
+    def __init__(self, in_features, out_features):
+        super(GraphConvolutionLayer, self).__init__()
+        self.linear1 = nn.Linear(in_features, out_features)
+        self.act1 = ShiftedSoftplus()
+        self.linear2 = nn.Linear(out_features, out_features)
+        self.act2 = ShiftedSoftplus()
 
-    def reset_parameters(self):
-        if self.use_node_features:
-            self.emb.weight.data.uniform_(-sqrt(3), sqrt(3))
-        self.lin_rbf_0.reset_parameters()
-        self.lin.reset_parameters()
-        glorot_orthogonal(self.lin_rbf_1.weight, scale=2.0)
 
-    def forward(self, x, emb, i, j):
-        rbf, _, _ = emb
-        if self.use_node_features:
-            x = self.emb(x)
-        else:
-            x = self.node_embedding[None, :].expand(x.shape[0], -1)
-        rbf0 = self.act(self.lin_rbf_0(rbf))
-        e1 = self.act(self.lin(torch.cat([x[i], x[j], rbf0], dim=-1)))
-        e2 = self.lin_rbf_1(rbf) * e1
+    def forward(self, x, e,adj_matrix):
 
-        return e1, e2
+        out = torch.matmul(adj_matrix, x)
+        out = self.linear1(out)
+        out= self.act1(out)
+        out = self.linear2(out)
+        out = self.act2(out)
+        return x+out
+
+
 
 class update_e(torch.nn.Module):
     def __init__(self, hidden_channels, int_emb_size, basis_emb_size_dist, basis_emb_size_angle, basis_emb_size_torsion,
@@ -179,18 +169,11 @@ class update_e(torch.nn.Module):
         return e1, e2
 
 class update_x(torch.nn.Module):
-    def __init__(self, hidden_channels, out_emb_channels, out_channels, num_output_layers, act, output_init):
-        super(update_v, self).__init__()
-        self.act = act
-        self.output_init = output_init
-
-        self.lin_up = nn.Linear(hidden_channels, out_emb_channels, bias=True)
-        self.lins = torch.nn.ModuleList()
-        for _ in range(num_output_layers):
-            self.lins.append(nn.Linear(out_emb_channels, out_emb_channels))
-        self.lin = nn.Linear(out_emb_channels, out_channels, bias=False)
-
-        self.reset_parameters()
+    def __init__(self, in_features, out_features):
+        super(update_x, self).__init__()
+        self.conv1 = GraphConvolutionLayer(in_features, out_features)
+        self.conv2 = GraphConvolutionLayer(out_features, out_features)
+        self.act = ShiftedSoftplus()
 
     def reset_parameters(self):
         glorot_orthogonal(self.lin_up.weight, scale=2.0)
@@ -202,14 +185,11 @@ class update_x(torch.nn.Module):
         if self.output_init == 'GlorotOrthogonal':
             glorot_orthogonal(self.lin.weight, scale=2.0)
 
-    def forward(self, e, i):
-        _, e2 = e
-        v = scatter(e2, i, dim=0)
-        v = self.lin_up(v)
-        for lin in self.lins:
-            v = self.act(lin(v))
-        v = self.lin(v)
-        return v
+    def forward(self, x, adj_matrix):
+        x= self.conv1(x, adj_matrix)
+        x = self.act()
+        x = self.conv2(x, adj_matrix)
+        return x
 
 class update_u(torch.nn.Module):
     def __init__(self):
@@ -220,17 +200,7 @@ class update_u(torch.nn.Module):
         return u
 
 class SimplicialMessagePassingBlock(torch.nn.Module):
-    def __init__(self, order,
-                 hidden_channels,
-                 int_emb_size,
-                 basis_emb_size_dist,
-                 basis_emb_size_angle,
-                 basis_emb_size_torsion,
-                 num_spherical,
-                 num_radial,
-                 num_before_skip,
-                 num_after_skip,
-                 act=swish):
+    def __init__(self, order):
         super(SimplicialMessagePassingBlock, self).__init__()
         self.order = order
 
@@ -258,31 +228,23 @@ class SMPNN(torch.nn.Module):
         self.energy_and_force = energy_and_force
 
 
-        self.x_0 = init(num_radial, hidden_channels, act, use_node_features=use_node_features)
-        self.x_1 = update_v(hidden_channels, out_emb_channels, out_channels, num_output_layers, act, output_init)
-        # self.x_2 = update_u()
-        self.emb = emb(num_spherical, num_radial, self.cutoff, envelope_exponent)
+        self.emb = emb(hidden_channels)
 
+        self.smpblocks = torch.nn.ModuleList([SimplicialMessagePassingBlock(order=3) for _ in range(num_layers)])
 
-        self.smpblocks = torch.nn.ModuleList([SimplicialMessagePassingBlock() for _ in range(num_layers)])
-
-        self.reset_parameters()
+        # self.reset_parameters()
 
     def reset_parameters(self):
-        self.init_e.reset_parameters()
-        self.init_v.reset_parameters()
         self.emb.reset_parameters()
-        for update_e in self.update_es:
-            update_e.reset_parameters()
-        for update_v in self.update_vs:
-            update_v.reset_parameters()
+        for smpblock in self.smpblocks:
+            smpblock.reset_parameters()
 
-    def forward(self, batch_data, require_node_features):
+
+    def forward(self, batch_data, require_node_features=False):
         self.results=[]
 
         data = batch_data['batch_data']
         adj = batch_data['batch_adj']
-
 
         z, pos, batch = data.z, data.pos, data.batch
         z1, ori1, pos1 = data.z1, data.ori1, data.pos1
@@ -298,9 +260,18 @@ class SMPNN(torch.nn.Module):
 
         x,x1,x2,x3 = self.emb(z,z1,z2,z3)
 
+        node_feature = {'s0':x,
+                        's1':x1,
+                        's2':x2,
+                        's3':x3,}
+        edge_feature = {'pos0':pos,
+                        'pos1':pos1,
+                        'pos2':pos2,
+                        'pos3':pos3,}
         # after embedding, then simplicial message passing
-        for update_x, update_e in zip(self.smpblocks):
-            e0,e1,e2,e3 = update_e(x,x1,x2,x3)
+        for blk in zip(self.smpblocks):
+
+            e0,e1,e2,e3 = blk(node_feature)
             x,x1,x2,x3 = update_x(x,x1,x2,x3, e1,e2,e3, am0, am1, am2)
             self.results.append(x)
 

@@ -1,5 +1,5 @@
-from dataset.PygQM93D import QM93D
-from model.schnet import SchNet
+from dataset.PygQM9SC import QM9SC,BuildSimplex
+from model.smpnn import SMPNN
 from utils.eval import ThreeDEvaluator
 from utils.train import Train
 from utils.logger import create_logger
@@ -7,7 +7,7 @@ import torch
 import os
 import argparse
 from datetime import datetime
-from torch_geometric.data import DataLoader
+from dataset.sc_dataloader import DataLoader
 
 def init_arg():
     parser = argparse.ArgumentParser()
@@ -89,7 +89,7 @@ def main():
 
 
     # Load the dataset and split
-    dataset = QM93D(root='/home/lanhai/restore/dataset/QM9')
+    dataset = QM9SC(root='/home/lanhai/restore/dataset/QM9',transform=BuildSimplex(3))
     target = 'U0'
     dataset.data.y = dataset.data[target]
     split_idx = dataset.get_idx_split(len(dataset.data.y), train_size=110000, valid_size=10000, seed=42)
@@ -100,13 +100,7 @@ def main():
 
 
     # Define model, loss, and evaluation
-    model = SchNet(energy_and_force=False,
-                   cutoff=10.0,
-                   num_layers=6,
-                   hidden_channels=128,
-                   out_channels=1,
-                   num_filters=128,
-                   num_gaussians=50)
+    model = SMPNN()
 
     loss_func = torch.nn.L1Loss()
     evaluation = ThreeDEvaluator()
@@ -114,7 +108,7 @@ def main():
     # Train and evaluate
     run3d = Train(run_path, logger)
     run3d.run('cuda', train_loader, valid_loader, test_loader, model, loss_func, evaluation,
-              epochs=args.epoch,  lr=0.0005, lr_decay_factor=0.5, lr_decay_step_size=15)
+              epochs=args.epoch, lr=0.0005, lr_decay_factor=0.5, lr_decay_step_size=15)
 
 
 
