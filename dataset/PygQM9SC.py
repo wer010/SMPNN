@@ -20,7 +20,7 @@ class BuildSimplex(torch.nn.Module):
         super().__init__()
         self.order = order
 
-    def forward(self, data):
+    def forward(self, data, require_edge_index=True):
         """
         Returns:
             features of simplices and the adjacent matrix
@@ -30,63 +30,85 @@ class BuildSimplex(torch.nn.Module):
 
         sc_i = Delaunay(pos)
         s3_i = sc_i.simplices
-        s2_i, am2_i = extrace_ls_from_hs(s3_i)
-        s1_i, am1_i = extrace_ls_from_hs(s2_i)
-        s0_i= sc_i.points
-        am0_i = get_adj_mat(s0_i, s1_i)
+
+        if require_edge_index:
+            s2_i, am2_i = extrace_ls_from_hs(s3_i)
+            s1_i, am1_i = extrace_ls_from_hs(s2_i)
+            s0_i = sc_i.points
+            am0_i = s1_i.T
+        else:
+            s2_i, am2_i = extrace_ls_from_hs(s3_i, require_edge_index=False)
+            s1_i, am1_i = extrace_ls_from_hs(s2_i, require_edge_index=False)
+            s0_i = sc_i.points
+            am0_i = get_adj_mat(s0_i, s1_i)
+
         adj_mat = Data()
         # the k-simplices in a batch can be concat like other tensors, but the adj matrix in a batch can't,
         # therefore I use an additional Data to save the adj matrix to easier collate
         # give the k-simplex feature, barycenter
 
-        adj_mat.am0 = torch.tensor(am0_i, dtype=torch.int32)
+        adj_mat.am0 = torch.tensor(am0_i, dtype=torch.int64)
 
-        data.s1 = torch.tensor(s1_i, dtype=torch.int32)
-        pos1 = (pos[s1_i[:,0],:]+ pos[s1_i[:,1],:])/2.0         #barycentre coordinate
-        ab1 = -pos[s1_i[:,0],:]+ pos[s1_i[:,1],:]               # vector AB
-        z1 = np.linalg.norm(ab1,2,axis=-1)                      #length of the edge
-        ori1 = ab1/np.expand_dims(z1, -1)                       #normailized orientation vector
-        adj_mat.am1 = torch.tensor(am1_i, dtype=torch.int32)    #adj matrix
+        pos1 = (pos[s1_i[:, 0], :] + pos[s1_i[:, 1], :]) / 2.0  # barycentre coordinate
+        ab1 = -pos[s1_i[:, 0], :] + pos[s1_i[:, 1], :]  # vector AB
+        z1 = np.linalg.norm(ab1, 2, axis=-1)  # length of the edge
+        ori1 = ab1 / np.expand_dims(z1, -1)  # normailized orientation vector
+        adj_mat.am1 = torch.tensor(am1_i, dtype=torch.int64)  # adj matrix
 
-        data.s2 = torch.tensor(s2_i, dtype=torch.int32)
-        pos2 = (pos[s2_i[:, 0], :] + pos[s2_i[:, 1], :]+ pos[s2_i[:, 2], :]) / 3.0          #barycentre coordinate
-        ab2 = -pos[s2_i[:, 0], :] + pos[s2_i[:, 1], :]                                      #vector AB
-        ac2 = -pos[s2_i[:, 0], :] + pos[s2_i[:, 2], :]                                      #vector AC
-        ori2 = np.cross(ab2,ac2)
-        z2 = np.linalg.norm(ori2,2,axis=-1)/2.0                                             #area of triangle
-        ori2 = ori2/np.expand_dims(z2, -1)                                                  #normailized normal vector
-        adj_mat.am2 = torch.tensor(am2_i, dtype=torch.int32)
+        pos2 = (pos[s2_i[:, 0], :] + pos[s2_i[:, 1], :] + pos[s2_i[:, 2], :]) / 3.0  # barycentre coordinate
+        ab2 = -pos[s2_i[:, 0], :] + pos[s2_i[:, 1], :]  # vector AB
+        ac2 = -pos[s2_i[:, 0], :] + pos[s2_i[:, 2], :]  # vector AC
+        ori2 = np.cross(ab2, ac2)
+        z2 = np.linalg.norm(ori2, 2, axis=-1) / 2.0  # area of triangle
+        ori2 = ori2 / np.expand_dims(z2, -1)  # normailized normal vector
+        adj_mat.am2 = torch.tensor(am2_i, dtype=torch.int64)
 
-        data.s3 = torch.tensor(s3_i, dtype=torch.int32)
-        pos3 = (pos[s3_i[:, 0], :] + pos[s3_i[:, 1], :] + pos[s3_i[:, 2], :]+ pos[s3_i[:, 3], :]) / 4.0
-        ab3 = -pos[s3_i[:, 0], :] + pos[s3_i[:, 1], :]                                      #vector AB
-        ac3 = -pos[s3_i[:, 0], :] + pos[s3_i[:, 2], :]                                      #vector AC
-        ad3 = -pos[s3_i[:, 0], :] + pos[s3_i[:, 3], :]                                      #vector AD
-        z3 = np.abs(np.expand_dims(np.cross(ab3,ac3),-2) @ np.expand_dims(ad3,-1))/6.0      #volume of tetrahedron
+        pos3 = (pos[s3_i[:, 0], :] + pos[s3_i[:, 1], :] + pos[s3_i[:, 2], :] + pos[s3_i[:, 3], :]) / 4.0
+        ab3 = -pos[s3_i[:, 0], :] + pos[s3_i[:, 1], :]  # vector AB
+        ac3 = -pos[s3_i[:, 0], :] + pos[s3_i[:, 2], :]  # vector AC
+        ad3 = -pos[s3_i[:, 0], :] + pos[s3_i[:, 3], :]  # vector AD
+        z3 = np.abs(np.expand_dims(np.cross(ab3, ac3), -2) @ np.expand_dims(ad3, -1)) / 6.0  # volume of tetrahedron
         z3 = np.squeeze(z3)
+
+        z3 = z3.reshape([-1])
+
+        # data.s1 = torch.tensor(s1_i, dtype=torch.int32)
+        # data.s2 = torch.tensor(s2_i, dtype=torch.int32)
+        # data.s3 = torch.tensor(s3_i, dtype=torch.int32)
+
+        # only features are sent for calculation
         data.z1 = torch.tensor(z1, dtype=torch.float32)
-        data.ori1 = torch.tensor(ori1, dtype=torch.float32)
         data.z2 = torch.tensor(z2, dtype=torch.float32)
-        data.ori2 = torch.tensor(ori2, dtype=torch.float32)
         data.z3 = torch.tensor(z3, dtype=torch.float32)
 
-        data.pos1 = torch.tensor(pos1, dtype=torch.float32)
-        data.pos2 = torch.tensor(pos2, dtype=torch.float32)
-        data.pos3 = torch.tensor(pos3, dtype=torch.float32)
-        ret = {'data': data, 'adj_mat': adj_mat}
+        # data.ori1 = torch.tensor(ori1, dtype=torch.float32)
+        # data.ori2 = torch.tensor(ori2, dtype=torch.float32)
+        # data.pos1 = torch.tensor(pos1, dtype=torch.float32)
+        # data.pos2 = torch.tensor(pos2, dtype=torch.float32)
+        # data.pos3 = torch.tensor(pos3, dtype=torch.float32)
+        if require_edge_index:
+            ret = {'data': data, 'edg_ind': adj_mat}
+        else:
+            ret = {'data': data, 'adj_mat': adj_mat}
+
         return ret
 
     def __repr__(self) -> str:
         detail = f"(size={self.size}, interpolation={self.interpolation.value}, max_size={self.max_size}, antialias={self.antialias})"
         return f"{self.__class__.__name__}{detail}"
 
-def extrace_ls_from_hs(t):
+
+def extrace_ls_from_hs(t, require_edge_index=True):
+    """
+    param:
+    require_edge_index: if this param is True, then return the edge index, else return adjacency matrix
+    """
     envelope = []
     ind_list = []
     for tet in t:
         ind = []
         for i in range(tet.shape[0]):
-            res = np.delete(tet,i).tolist()
+            res = np.delete(tet, i).tolist()
             res.sort()
             # if face has already been encountered, then it's not on the envelope
             # the magic of hashsets makes that check O(1) (eg. extremely fast)
@@ -97,26 +119,33 @@ def extrace_ls_from_hs(t):
                 # if not encoutered yet, add it flipped
             else:
                 envelope.append(res)
-                ind.append(len(envelope)-1)
+                ind.append(len(envelope) - 1)
         ind_list.append(ind)
     # there is now only faces encountered once (or an odd number of times for paradoxical meshes)
     # another important task is generate the adjacency matrix
-    am = np.zeros([len(envelope),len(envelope)],dtype=int)
+
+    if require_edge_index:
+        edge_index = np.asarray(ind_list)
+        edge_index = edge_index.T
+        return np.array(envelope), edge_index
+    else:
+        am = np.zeros([len(envelope), len(envelope)], dtype=int)
 
     for ind in ind_list:
         for i in range(len(ind)):
-            am[ind[i], ind[:i]+ind[i+1:]]=1
+            am[ind[i], ind[:i] + ind[i + 1:]] = 1
 
     # check if adj matrix is diagonal
-    assert (am==am.T).all()
+    assert (am == am.T).all()
     return np.array(envelope), am
 
-def get_adj_mat(points,edges):
-    am = np.zeros([points.shape[0],points.shape[0]],dtype=int)
+
+def get_adj_mat(points, edges):
+    am = np.zeros([points.shape[0], points.shape[0]], dtype=int)
 
     for ind in edges:
         ind = ind.tolist()
-        am[ind, ind[::-1]]=1
+        am[ind, ind[::-1]] = 1
     return am
 
 
@@ -141,8 +170,6 @@ class QM9SC(InMemoryDataset):
     def processed_file_names(self):
         return 'qm9_sc_pyg.pt'
 
-
-
     def download(self):
         download_url(self.url, self.raw_dir)
 
@@ -162,8 +189,6 @@ class QM9SC(InMemoryDataset):
             target[name] = np.expand_dims(data[name], axis=-1)
         # y = np.expand_dims([data[name] for name in ['mu', 'alpha', 'homo', 'lumo', 'gap', 'r2', 'zpve','U0', 'U', 'H', 'G', 'Cv']], axis=-1)
 
-
-
         data_list = []
         num_invalid = 1
         for i in tqdm(range(len(N))):
@@ -177,7 +202,7 @@ class QM9SC(InMemoryDataset):
             except:
                 print(f"{num_invalid} molecules is invalid to build simplicial complex. Omit the molecules.")
                 print(Z_qm9[i])
-                num_invalid+=1
+                num_invalid += 1
                 continue
 
             z_i = torch.tensor(Z_qm9[i], dtype=torch.int64)
@@ -197,7 +222,6 @@ class QM9SC(InMemoryDataset):
 
         print('Saving...')
         torch.save((data, slices), self.processed_paths[0])
-
 
     # def process_sc(self):
     #
@@ -251,8 +275,6 @@ class QM9SC(InMemoryDataset):
     #     print('Saving...')
     #     torch.save((data, slices), self.processed_sc_file_names)
 
-
-
     def get_idx_split(self, data_size, train_size, valid_size, seed):
         ids = shuffle(range(data_size), random_state=seed)
         train_idx, val_idx, test_idx = torch.tensor(ids[:train_size]), torch.tensor(
@@ -261,8 +283,8 @@ class QM9SC(InMemoryDataset):
         return split_dict
 
     def __getitem__(
-        self,
-        idx: Union[int, np.integer, IndexType],
+            self,
+            idx: Union[int, np.integer, IndexType],
     ) -> Union['Dataset', Data]:
 
         if (isinstance(idx, (int, np.integer))
@@ -273,15 +295,16 @@ class QM9SC(InMemoryDataset):
             if self.transform is None:
                 return data
             else:
+                # print(data.z)
                 data = self.transform(data)
                 return data
 
         else:
             return self.index_select(idx)
 
-if __name__ == '__main__':
-    dataset = QM9SC(root='/home/lanhai/restore/dataset/QM9')
 
+if __name__ == '__main__':
+    dataset = QM9SC(root='/home/lanhai/restore/dataset/QM9', transform=BuildSimplex(3))
     print(dataset)
     print(dataset.data.z.shape)
     print(dataset.data.pos.shape)
@@ -295,6 +318,7 @@ if __name__ == '__main__':
     print(dataset[split_idx['train']])
     train_dataset, valid_dataset, test_dataset = dataset[split_idx['train']], dataset[split_idx['valid']], dataset[
         split_idx['test']]
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=False)
     data = next(iter(train_loader))
+
     print(data)

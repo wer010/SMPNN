@@ -1,5 +1,6 @@
 from dataset.PygQM93D import QM93D
 from model.schnet import SchNet
+from model.mpnn import MPNN
 from utils.eval import ThreeDEvaluator
 from utils.train import Train
 from utils.logger import create_logger
@@ -62,17 +63,6 @@ def init_arg():
                         help="local_rank for distributed training on gpus")
     parser.add_argument('--seed', type=int, default=42,
                         help="random seed for initialization")
-    parser.add_argument('--gradient_accumulation_steps', type=int, default=1,
-                        help="Number of updates steps to accumulate before performing a backward/update pass.")
-    parser.add_argument('--fp16', action='store_true',
-                        help="Whether to use 16-bit float precision instead of 32-bit")
-    parser.add_argument('--fp16_opt_level', type=str, default='O2',
-                        help="For fp16: Apex AMP optimization level selected in ['O0', 'O1', 'O2', and 'O3']."
-                             "See details at https://nvidia.github.io/apex/amp.html")
-    parser.add_argument('--loss_scale', type=float, default=0,
-                        help="Loss scaling to improve fp16 numeric stability. Only used when fp16 set to True.\n"
-                             "0 (default value): dynamic loss scaling.\n"
-                             "Positive power of 2: static loss scaling value.\n")
 
     args = parser.parse_args()
     return args
@@ -100,7 +90,7 @@ def main():
 
 
     # Define model, loss, and evaluation
-    model = SchNet(energy_and_force=False,
+    model = MPNN(energy_and_force=False,
                    cutoff=10.0,
                    num_layers=6,
                    hidden_channels=128,
@@ -111,6 +101,7 @@ def main():
     loss_func = torch.nn.L1Loss()
     evaluation = ThreeDEvaluator()
 
+    logger.info(model)
     # Train and evaluate
     run3d = Train(run_path, logger)
     run3d.run('cuda', train_loader, valid_loader, test_loader, model, loss_func, evaluation,

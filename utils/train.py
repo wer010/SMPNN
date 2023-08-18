@@ -45,8 +45,11 @@ class Train():
             self.logger.info("\n=====Epoch {}".format(epoch))
 
             self.logger.info('\nTraining...')
+            # valid_mae = self.val(model, valid_loader, energy_and_force, p, evaluation, device)
+
             model.train()
             loss_accum = 0
+
             for step, batch_data in enumerate(tqdm(train_loader)):
                 optimizer.zero_grad()
                 if isinstance(batch_data,dict):
@@ -63,7 +66,11 @@ class Train():
                     f_loss = loss_func(force, batch_data.force)
                     loss = e_loss + p * f_loss
                 else:
-                    loss = loss_func(out, batch_data.y.unsqueeze(1))
+                    if isinstance(batch_data,dict):
+                        loss = loss_func(out, batch_data['batch_data'].y.unsqueeze(1))
+                    else:
+                        loss = loss_func(out, batch_data.y.unsqueeze(1))
+
                 loss.backward()
                 optimizer.step()
                 loss_accum += loss.detach().cpu().item()
@@ -126,7 +133,15 @@ class Train():
             targets_force = torch.Tensor([]).to(device)
 
         for step, batch_data in enumerate(tqdm(data_loader)):
-            batch_data = batch_data.to(device)
+            if isinstance(batch_data, dict):
+                for key in batch_data:
+                    batch_data[key] = batch_data[key].to(device)
+                targets = torch.cat([targets, batch_data['batch_data'].y.unsqueeze(1)], dim=0)
+
+            else:
+                batch_data = batch_data.to(device)
+                targets = torch.cat([targets, batch_data.y.unsqueeze(1)], dim=0)
+
             out = model(batch_data)
             if energy_and_force:
                 force = -grad(outputs=out, inputs=batch_data.pos, grad_outputs=torch.ones_like(out), create_graph=True,
@@ -134,7 +149,6 @@ class Train():
                 preds_force = torch.cat([preds_force, force.detach_()], dim=0)
                 targets_force = torch.cat([targets_force, batch_data.force], dim=0)
             preds = torch.cat([preds, out.detach_()], dim=0)
-            targets = torch.cat([targets, batch_data.y.unsqueeze(1)], dim=0)
 
         input_dict = {"y_true": targets, "y_pred": preds}
 

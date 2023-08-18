@@ -14,7 +14,7 @@ def init_arg():
     # Required parameters
 
     parser.add_argument("--model_type",
-                        default="schnet",
+                        default="smpnn",
                         help="Which variant to use.")
 
     parser.add_argument("--num_workers", default=0, type=int,
@@ -62,17 +62,6 @@ def init_arg():
                         help="local_rank for distributed training on gpus")
     parser.add_argument('--seed', type=int, default=42,
                         help="random seed for initialization")
-    parser.add_argument('--gradient_accumulation_steps', type=int, default=1,
-                        help="Number of updates steps to accumulate before performing a backward/update pass.")
-    parser.add_argument('--fp16', action='store_true',
-                        help="Whether to use 16-bit float precision instead of 32-bit")
-    parser.add_argument('--fp16_opt_level', type=str, default='O2',
-                        help="For fp16: Apex AMP optimization level selected in ['O0', 'O1', 'O2', and 'O3']."
-                             "See details at https://nvidia.github.io/apex/amp.html")
-    parser.add_argument('--loss_scale', type=float, default=0,
-                        help="Loss scaling to improve fp16 numeric stability. Only used when fp16 set to True.\n"
-                             "0 (default value): dynamic loss scaling.\n"
-                             "Positive power of 2: static loss scaling value.\n")
 
     args = parser.parse_args()
     return args
@@ -94,13 +83,19 @@ def main():
     dataset.data.y = dataset.data[target]
     split_idx = dataset.get_idx_split(len(dataset.data.y), train_size=110000, valid_size=10000, seed=42)
     train_dataset, valid_dataset, test_dataset = dataset[split_idx['train']], dataset[split_idx['valid']], dataset[split_idx['test']]
-    train_loader = DataLoader(train_dataset, args.train_batch_size, shuffle=True)
+    train_loader = DataLoader(train_dataset, args.train_batch_size, shuffle=False)
     valid_loader = DataLoader(valid_dataset, args.eval_batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, args.eval_batch_size, shuffle=False)
 
 
     # Define model, loss, and evaluation
-    model = SMPNN()
+    model = SMPNN(energy_and_force=False,
+                   cutoff=10.0,
+                   num_layers=6,
+                   hidden_channels=128,
+                   out_channels=1,
+                   num_filters=128,
+                   num_gaussians=50)
 
     loss_func = torch.nn.L1Loss()
     evaluation = ThreeDEvaluator()
